@@ -249,7 +249,7 @@ app.delete('/api/transaksi/:jenis/:id', (req, res) => {
 });
 
 // ==========================================
-// 3. ENDPOINT KELOLA PRESET (INPUT CEPAT)
+// 4. ENDPOINT KELOLA PRESET (INPUT CEPAT)
 // ==========================================
 
 // Ambil daftar preset user (menggunakan alias agar cocok dengan key di Flutter)
@@ -343,7 +343,7 @@ app.post('/api/preset/quick-input', (req, res) => {
 });
 
 // ==========================================
-// 3. ENDPOINT KELOLA PRESET (EDIT & HAPUS)
+// 5. ENDPOINT KELOLA PRESET (EDIT & HAPUS)
 // ==========================================
 
 // Edit Preset (Wireframe Halaman Edit Preset)
@@ -365,6 +365,77 @@ app.delete('/api/preset/:presetId', (req, res) => {
     res.json({ success: true, message: 'Preset berhasil dihapus!' });
   });
 });
+
+// =========================================================================
+// 6. ENDPOINT INFORMASI KEUANGAN & GRAFIK (USE CASE 3)
+// =========================================================================
+app.get('/api/laporan/:userId', (req, res) => {
+  const { userId } = req.params;
+  const { startDate, endDate } = req.query;
+
+  let filterDateSql = '';
+  const params = [userId, userId];
+
+  if (startDate && endDate) {
+    filterDateSql = ' AND DATE(date) BETWEEN ? AND ?';
+  }
+
+  const sql = `
+    SELECT p.pemasukan_id AS id, p.nama_catatan AS judul, 'Pemasukan' AS jenis,
+           p.kategori, p.jumlah AS nominal, DATE_FORMAT(p.date, '%Y-%m-%d') AS tanggal,
+           p.deskripsi
+    FROM pemasukan p
+    JOIN catatan_keuangan c ON p.catatan_id = c.catatan_id
+    WHERE c.user_id = ? ${filterDateSql}
+    UNION ALL
+    SELECT g.pengeluaran_id AS id, g.nama_catatan AS judul, 'Pengeluaran' AS jenis,
+           g.kategori, g.jumlah AS nominal, DATE_FORMAT(g.date, '%Y-%m-%d') AS tanggal,
+           g.deskripsi
+    FROM pengeluaran g
+    JOIN catatan_keuangan c ON g.catatan_id = c.catatan_id
+    WHERE c.user_id = ? ${filterDateSql}
+    ORDER BY tanggal DESC, id DESC
+  `;
+
+  const queryParams = startDate && endDate
+    ? [userId, startDate, endDate, userId, startDate, endDate]
+    : [userId, userId];
+
+  db.query(sql, queryParams, (err, rows) => {
+    if (err) {
+      console.error('Error ambil laporan:', err);
+      return res.status(500).json({ success: false, message: err.message });
+    }
+
+    let totalPemasukan = 0;
+    let totalPengeluaran = 0;
+    const kategoriMap = {};
+
+    rows.forEach((item) => {
+      const nom = parseFloat(item.nominal) || 0;
+      if (item.jenis === 'Pemasukan') {
+        totalPemasukan += nom;
+      } else {
+        totalPengeluaran += nom;
+        const kat = item.kategori || 'Lainnya';
+        kategoriMap[kat] = (kategoriMap[kat] || 0) + nom;
+      }
+    });
+
+    res.json({
+      success: true,
+      ringkasan: {
+        total_pemasukan: totalPemasukan,
+        total_pengeluaran: totalPengeluaran,
+        saldo: totalPemasukan - totalPengeluaran,
+      },
+      kategori_pengeluaran: kategoriMap,
+      transaksi: rows,
+    });
+  });
+});
+
+
 
 app.listen(3000, () => console.log('Server API berjalan di port 3000'));
 // app.listen(3000, '0.0.0.0', () => {
