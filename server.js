@@ -174,15 +174,15 @@ app.get('/api/transaksi/:userId', (req, res) => {
   const { userId } = req.params;
 
   const sql = `
-    SELECT p.pemasukan_id AS id, p.nama_catatan AS judul, 'Pemasukan' AS jenis, 
-           p.kategori, p.jumlah AS nominal, DATE_FORMAT(p.date, '%Y-%m-%d') AS tanggal, 
+    SELECT p.pemasukan_id AS id, p.nama_catatan, 'Pemasukan' AS jenis, 
+           p.kategori, p.jumlah, DATE_FORMAT(p.date, '%Y-%m-%d') AS tanggal, 
            p.deskripsi, p.created_at 
     FROM pemasukan p
     JOIN catatan_keuangan c ON p.catatan_id = c.catatan_id
     WHERE c.user_id = ?
     UNION ALL
-    SELECT g.pengeluaran_id AS id, g.nama_catatan AS judul, 'Pengeluaran' AS jenis, 
-           g.kategori, g.jumlah AS nominal, DATE_FORMAT(g.date, '%Y-%m-%d') AS tanggal, 
+    SELECT g.pengeluaran_id AS id, g.nama_catatan, 'Pengeluaran' AS jenis, 
+           g.kategori, g.jumlah, DATE_FORMAT(g.date, '%Y-%m-%d') AS tanggal, 
            g.deskripsi, g.created_at 
     FROM pengeluaran g
     JOIN catatan_keuangan c ON g.catatan_id = c.catatan_id
@@ -201,8 +201,8 @@ app.get('/api/transaksi/:userId', (req, res) => {
 
 // Tambah Transaksi Baru (Pemasukan / Pengeluaran)
 app.post('/api/transaksi', (req, res) => {
-  const { user_id, jenis, nama_catatan, nominal, kategori, tanggal, deskripsi } = req.body;
-  const nominalNum = parseFloat(nominal) || 0;
+  const { user_id, jenis, nama_catatan, jumlah, kategori, tanggal, deskripsi } = req.body;
+  const nominalNum = parseFloat(jumlah) || 0;
 
   db.query('SELECT catatan_id FROM catatan_keuangan WHERE user_id = ?', [user_id], (err, rows) => {
     if (err) return res.status(500).json({ success: false, message: err.message });
@@ -219,7 +219,7 @@ app.post('/api/transaksi', (req, res) => {
             user_id,
             'Catatan Keuangan',
             'Tambah Transaksi Pemasukan',
-            `${nama_catatan} • Rp ${nominalNum.toLocaleString('id-ID')} (${kategori || 'Pemasukan'})`
+            `${nama_catatan} - Rp ${nominalNum.toLocaleString('id-ID')} (${kategori || 'Pemasukan'})`
           );
 
           res.json({ success: true, message: 'Pemasukan berhasil disimpan!', id: result.insertId });
@@ -261,40 +261,72 @@ app.post('/api/transaksi', (req, res) => {
 // Edit Transaksi (Mencatat perubahan nominal/nama untuk mencegah manipulasi)
 app.put('/api/transaksi/:id', (req, res) => {
   const { id } = req.params;
-  const { user_id, jenis, nama_catatan, kategori, jumlah, date } = req.body;
-  const tabel = jenis === 'Pemasukan' ? 'pemasukan' : 'pengeluaran';
-  const kolomId = jenis === 'Pemasukan' ? 'pemasukan_id' : 'pengeluaran_id';
+  const {
+    user_id,
+    jenis,
+    jenis_lama,
+    jenis_baru,
+    nama_catatan,
+    kategori,
+    jumlah,
+    date,
+    tanggal,
+  } = req.body;
+
+  const jenisLamaFix = jenis_lama || jenis || req.query.jenis || 'Pengeluaran';
+  const jenisBaruFix = jenis_baru || jenis || jenisLamaFix || 'Transaksi';
+  const tanggalFix = date || tanggal;
+  const jumlahBaru = parseFloat(jumlah) || 0;
+
+  const tabelLama = jenisLamaFix === 'Pemasukan' ? 'pemasukan' : 'pengeluaran';
+  const kolomIdLama = jenisLamaFix === 'Pemasukan' ? 'pemasukan_id' : 'pengeluaran_id';
+
+  const tabelBaru = jenisBaruFix === 'Pemasukan' ? 'pemasukan' : 'pengeluaran';
+  const kolomIdBaru = jenisBaruFix === 'Pemasukan' ? 'pemasukan_id' : 'pengeluaran_id';
 
   // 1. Ambil data lama terlebih dahulu sebelum di-update
-  db.query(`SELECT nama_catatan, jumlah FROM ${tabel} WHERE ${kolomId} = ?`, [id], (errOld, oldRows) => {
-    const dataLama = oldRows && oldRows.length > 0 ? oldRows[0] : null;
+  db.query(
+    `SELECT nama_catatan, jumlah FROM ${tabelLama} WHERE ${kolomIdLama} = ?`,
+    [id],
+    (errOld, oldRows) => {
+      if (errOld) {
+        return res.status(500).json({ success: false, message: errOld.message });
+      }
+      const dataLama = oldRows && oldRows.length > 0 ? oldRows[0] : null;
 
-    const sqlUpdate = jenis === 'Pemasukan'
-      ? `UPDATE pemasukan SET nama_catatan = ?, jumlah = ?, date = ? WHERE pemasukan_id = ?`
-      : `UPDATE pengeluaran SET nama_catatan = ?, kategori = ?, jumlah = ?, date = ? WHERE pengeluaran_id = ?`;
+      const sqlUpdate = jenisBaruFix === 'Pemasukan'
+        ? `UPDATE pemasukan SET nama_catatan = ?, jumlah = ?, date = ? WHERE pemasukan_id = ?`
+        : `UPDATE pengeluaran SET nama_catatan = ?, kategori = ?, jumlah = ?, date = ? WHERE pengeluaran_id = ?`;
 
-    const params = jenis === 'Pemasukan'
-      ? [nama_catatan, jumlah, date, id]
-      : [nama_catatan, kategori || 'Lainnya', jumlah, date, id];
+      const params = jenisBaruFix === 'Pemasukan'
+        ? [nama_catatan, jumlahBaru, tanggalFix, id]
+        : [nama_catatan, kategori || 'Lainnya', jumlahBaru, tanggalFix, id];
 
-    db.query(sqlUpdate, params, (err) => {
-      if (err) return res.status(500).json({ success: false, message: err.message });
+      db.query(
+        sqlUpdate.replace(tabelBaru, tabelBaru).replace(kolomIdBaru, kolomIdBaru),
+        params,
+        (err) => {
+          if (err) {
+            return res.status(500).json({ success: false, message: err.message });
+          }
 
-      // 2. Catat perbandingan Sebelum -> Sesudah ke activity_log
-      const infoPerubahan = dataLama
-        ? `"${dataLama.nama_catatan}" (Rp ${Number(dataLama.jumlah).toLocaleString('id-ID')}) -> "${nama_catatan}" (Rp ${Number(jumlah).toLocaleString('id-ID')})`
-        : `${nama_catatan} (Rp ${Number(jumlah).toLocaleString('id-ID')})`;
+          // 2. Catat perbandingan Sebelum -> Sesudah ke activity_log
+          const infoPerubahan = dataLama
+            ? `"${dataLama.nama_catatan}" (Rp ${Number(dataLama.jumlah).toLocaleString('id-ID')}) -> "${nama_catatan}" (Rp ${jumlahBaru.toLocaleString('id-ID')})`
+            : `${nama_catatan} (Rp ${jumlahBaru.toLocaleString('id-ID')})`;
 
-      catatLogAktivitas(
-        user_id,
-        'Catatan Keuangan',
-        `Edit Transaksi (${jenis})`,
-        infoPerubahan
+          catatLogAktivitas(
+            user_id || req.query.userId || null,
+            'Catatan Keuangan',
+            `Edit Transaksi (${jenisBaruFix})`,
+            infoPerubahan
+          );
+
+          res.json({ success: true, message: 'Transaksi berhasil diperbarui!' });
+        }
       );
-
-      res.json({ success: true, message: 'Transaksi berhasil diperbarui!' });
-    });
-  });
+    }
+  );
 });
 
 // Hapus Transaksi (Mencatat item & nominal yang dihapus agar tidak bisa dihilangkan diam-diam)
@@ -304,26 +336,45 @@ app.delete('/api/transaksi/:id', (req, res) => {
   const tabel = jenis === 'Pemasukan' ? 'pemasukan' : 'pengeluaran';
   const kolomId = jenis === 'Pemasukan' ? 'pemasukan_id' : 'pengeluaran_id';
 
-  db.query(`SELECT nama_catatan, jumlah FROM ${tabel} WHERE ${kolomId} = ?`, [id], (errOld, oldRows) => {
-    const dataLama = oldRows && oldRows.length > 0 ? oldRows[0] : null;
+  db.query(
+    `SELECT catatan_id, nama_catatan, jumlah FROM ${tabel} WHERE ${kolomId} = ?`,
+    [id],
+    (errOld, oldRows) => {
+      if (errOld) {
+        return res.status(500).json({ success: false, message: errOld.message });
+      }
 
-    db.query(`DELETE FROM ${tabel} WHERE ${kolomId} = ?`, [id], (err) => {
-      if (err) return res.status(500).json({ success: false, message: err.message });
+      const dataLama = oldRows && oldRows.length > 0 ? oldRows[0] : null;
 
-      const infoHapus = dataLama
-        ? `Menghapus "${dataLama.nama_catatan}" senilai Rp ${Number(dataLama.jumlah).toLocaleString('id-ID')}`
-        : `Menghapus transaksi ID: ${id}`;
+      db.query(`DELETE FROM ${tabel} WHERE ${kolomId} = ?`, [id], (err) => {
+        if (err) {
+          return res.status(500).json({ success: false, message: err.message });
+        }
 
-      catatLogAktivitas(
-        userId,
-        'Catatan Keuangan',
-        `Hapus Transaksi (${jenis || 'Transaksi'})`,
-        infoHapus
-      );
+        if (dataLama) {
+          const nominalHapus = Number(dataLama.jumlah) || 0;
+          const sqlSaldo = jenis === 'Pemasukan'
+            ? 'UPDATE catatan_keuangan SET total_pemasukan = GREATEST(0, total_pemasukan - ?), saldo = saldo - ? WHERE catatan_id = ?'
+            : 'UPDATE catatan_keuangan SET total_pengeluaran = GREATEST(0, total_pengeluaran - ?), saldo = saldo + ? WHERE catatan_id = ?';
 
-      res.json({ success: true, message: 'Transaksi berhasil dihapus!' });
-    });
-  });
+          db.query(sqlSaldo, [nominalHapus, nominalHapus, dataLama.catatan_id]);
+        }
+
+        const infoHapus = dataLama
+          ? `Menghapus "${dataLama.nama_catatan}" senilai Rp ${Number(dataLama.jumlah).toLocaleString('id-ID')}`
+          : `Menghapus transaksi ID: ${id}`;
+
+        catatLogAktivitas(
+          userId,
+          'Catatan Keuangan',
+          `Hapus Transaksi (${jenis || 'Transaksi'})`,
+          infoHapus
+        );
+
+        res.json({ success: true, message: 'Transaksi berhasil dihapus!' });
+      });
+    }
+  );
 });
 // ============================================================================
 // 4. ENDPOINT PRESET / INPUT CEPAT (USE CASE 2 PART 2)
@@ -394,10 +445,10 @@ app.post('/api/preset/quick-input', (req, res) => {
               message: `Input cepat "${preset.nama_catatan}" berhasil dicatat!`,
               data: {
                 id: result.insertId,
-                judul: preset.nama_catatan,
+                nama_catatan: preset.nama_catatan,
                 jenis: 'Pemasukan',
                 kategori: preset.kategori || 'Pemasukan',
-                nominal: nominalPreset,
+                jumlah: nominalPreset,
                 tanggal: tanggalHariIni,
                 deskripsi: preset.deskripsi || ''
               }
@@ -422,10 +473,10 @@ app.post('/api/preset/quick-input', (req, res) => {
               message: `Input cepat "${preset.nama_catatan}" berhasil dicatat!`,
               data: {
                 id: result.insertId,
-                judul: preset.nama_catatan,
+                nama_catatan: preset.nama_catatan,
                 jenis: 'Pengeluaran',
                 kategori: preset.kategori || 'Lainnya',
-                nominal: nominalPreset,
+                jumlah: nominalPreset,
                 tanggal: tanggalHariIni,
                 deskripsi: preset.deskripsi || ''
               }
@@ -509,15 +560,15 @@ app.get('/api/laporan/:userId', (req, res) => {
   }
 
   const sql = `
-    SELECT p.pemasukan_id AS id, p.nama_catatan AS judul, 'Pemasukan' AS jenis,
-           p.kategori, p.jumlah AS nominal, DATE_FORMAT(p.date, '%Y-%m-%d') AS tanggal,
+    SELECT p.pemasukan_id AS id, p.nama_catatan, 'Pemasukan' AS jenis,
+           p.kategori, p.jumlah, DATE_FORMAT(p.date, '%Y-%m-%d') AS tanggal,
            p.deskripsi
     FROM pemasukan p
     JOIN catatan_keuangan c ON p.catatan_id = c.catatan_id
     WHERE c.user_id = ? ${filterDateSql}
     UNION ALL
-    SELECT g.pengeluaran_id AS id, g.nama_catatan AS judul, 'Pengeluaran' AS jenis,
-           g.kategori, g.jumlah AS nominal, DATE_FORMAT(g.date, '%Y-%m-%d') AS tanggal,
+    SELECT g.pengeluaran_id AS id, g.nama_catatan, 'Pengeluaran' AS jenis,
+           g.kategori, g.jumlah, DATE_FORMAT(g.date, '%Y-%m-%d') AS tanggal,
            g.deskripsi
     FROM pengeluaran g
     JOIN catatan_keuangan c ON g.catatan_id = c.catatan_id
@@ -540,7 +591,7 @@ app.get('/api/laporan/:userId', (req, res) => {
     const kategoriMap = {};
 
     rows.forEach((item) => {
-      const nom = parseFloat(item.nominal) || 0;
+      const nom = parseFloat(item.jumlah) || 0;
       if (item.jenis === 'Pemasukan') {
         totalPemasukan += nom;
       } else {
@@ -627,7 +678,7 @@ app.post('/api/target', (req, res) => {
 
   db.query(
     sql,
-    [user_id, jenis, nama_target, nomTarget, nominal_terkumpul || 0, tenggat, keterangan || '', batasi_harian ? 1 : 0],
+    [user_id, jenis, nama_target, nomTarget, jumlah_terkumpul || 0, tenggat, keterangan || '', batasi_harian ? 1 : 0],
     (err, result) => {
       if (err) return res.status(500).json({ success: false, message: err.message });
 
@@ -933,7 +984,7 @@ app.get('/api/logs/:userId', (req, res) => {
   const { userId } = req.params;
   const sql = `
     SELECT log_id, user_id, modul, aksi, detail,
-           DATE_FORMAT(waktu_kejadian, '%d %b %Y • %H:%i:%s') AS waktu_format
+           DATE_FORMAT(waktu_kejadian, '%d %b %Y - %H:%i:%s') AS waktu_format
     FROM activity_log
     WHERE user_id = ?
     ORDER BY waktu_kejadian DESC, log_id DESC
